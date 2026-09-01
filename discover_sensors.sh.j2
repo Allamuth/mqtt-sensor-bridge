@@ -1,1 +1,15 @@
+#!/bin/bash
+
+#MQTT broker details
+mqtt_broker="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
+mqtt_port=1883
+mqtt_user=
+mqtt_password=
+mqtt_discovery_base_topic="homeassistant/sensor/servers_{{ ansible_hostname|replace("-", "_")_}}"
+
+
+# TODO: auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
+# TODO: script is run on every startup of server, run auto-discovery and if config is already there check for new or missing sensors
+
 # TODO: autogenerate discovery message for ansible mqtt
+# TODO: resend discovery message on each restart not only when sensors changed

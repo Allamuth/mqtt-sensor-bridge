@@ -11,12 +11,18 @@ mqtt_base_state_topic="servers/{{ ansible_hostname }}/"
 publish_mqtt() {
     local topic_suffix=$1
     local value=$2
+    local retained=$3
     local full_topic="${mqtt_base_state_topic}${topic_suffix}"
     
+    local retained_flag=""
+    if [ "$retained" == "true" || "$retained" == "1"]; then
+        retained_flag="-r"
+    fi
+
     if [ -n "$mqtt_user" ]; then
-        mosquitto_pub -h "$mqtt_broker" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$full_topic" -m "$value" -q 1
+        mosquitto_pub -h "$mqtt_broker" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$full_topic" -m "$value" -q 1 $retained_flag
     else
-        mosquitto_pub -h "$mqtt_broker" -p "$mqtt_port" -t "$full_topic" -m "$value" -q 1
+        mosquitto_pub -h "$mqtt_broker" -p "$mqtt_port" -t "$full_topic" -m "$value" -q 1 $retained_flag
     fi
 }
 
@@ -45,14 +51,17 @@ fi
 
 # TODO: look for other attributes to process and include them here including proper handling per device, run smartctl once to safe on time!
 # TODO: include drive name and slot? if possible. ID is written on drive so would be a good way to order them to location in case
+#TODO: if value is missing send retained unavailable to ensure reporting at HA side
 # Process each device
 for device in $devices; do
+    topic_suffix="disk_temp/$device"
+
     # Get the raw temperature value from attribute 190 or 194
     temp=$(smartctl -A "$device" 2>/dev/null | awk '/^190/ {print $10; exit} /^194/ {print $10}')
 
     if [ -n "$temp" ]; then
-        echo "$device: ${temp}°C"
+        publish_mqtt "$topic_suffix" "$temp"
     else
-        echo "$device: temperature not available" >&2
+        publish_mqtt "$topic_suffix" "unavailable" "true"
     fi
 done
