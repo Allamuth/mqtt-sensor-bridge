@@ -15,7 +15,7 @@ publish_mqtt() {
     local full_topic="${mqtt_base_state_topic}${topic_suffix}"
     
     local retained_flag=""
-    if [ "$retained" == "true" || "$retained" == "1"]; then
+    if [[ "$retained" == "true" || "$retained" == "1" ]]; then
         retained_flag="-r"
     fi
 
