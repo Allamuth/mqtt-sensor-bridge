@@ -1,11 +1,11 @@
 #!/bin/bash
 
 #MQTT broker details
-mqtt_broker="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
-mqtt_port=1883
-mqtt_user=
-mqtt_password=
-mqtt_base_state_topic="servers/{{ ansible_hostname }}/"
+readonly MQTT_BROKER="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
+readonly MQTT_PORT="1883"
+readonly MQTT_USER=""
+readonly MQTT_PASSWORD=""
+readonly MQTT_BASE_STATE_TOPIC="servers/{{ ansible_hostname }}/"
 
 # Function to publish sensor value to MQTT
 publish_mqtt() {
@@ -19,7 +19,7 @@ publish_mqtt() {
         retained_flag="-r"
     fi
 
-    if [ -n "$mqtt_user" ]; then
+    if [[ -n "$mqtt_user" ]]; then
         mosquitto_pub -h "$mqtt_broker" -p "$mqtt_port" -u "$mqtt_user" -P "$mqtt_password" -t "$full_topic" -m "$value" -q 1 $retained_flag
     else
         mosquitto_pub -h "$mqtt_broker" -p "$mqtt_port" -t "$full_topic" -m "$value" -q 1 $retained_flag
@@ -38,17 +38,6 @@ if ! command -v smartctl &> /dev/null; then
     exit 1
 fi
 
-# Find all /dev/sd* devices (excluding partitions like sda1, sdb2, etc.)
-# TODO: Find devices once and store in config to iterate over list instead of searching every time, move to other script?
-# TODO: check if number of devices changed to see if a new drive was added or removed. Move to other script?
-# TODO: if drive was removed/is missing throw error (create error also in HA)
-devices=$(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null)
-
-if [ -z "$devices" ]; then
-    echo "No /dev/sd* devices found." >&2
-    exit 1
-fi
-
 # TODO: look for other attributes to process and include them here including proper handling per device, run smartctl once to safe on time!
 # TODO: include drive name and slot? if possible. ID is written on drive so would be a good way to order them to location in case
 #TODO: if value is missing send retained unavailable to ensure reporting at HA side
@@ -59,7 +48,7 @@ for device in $devices; do
     # Get the raw temperature value from attribute 190 or 194
     temp=$(smartctl -A "$device" 2>/dev/null | awk '/^190/ {print $10; exit} /^194/ {print $10}')
 
-    if [ -n "$temp" ]; then
+    if [[ -n "$temp" ]]; then
         publish_mqtt "$topic_suffix" "$temp"
     else
         publish_mqtt "$topic_suffix" "unavailable" "true"

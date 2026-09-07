@@ -1,15 +1,26 @@
 #!/bin/bash
 
 #MQTT broker details
-mqtt_broker="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
-mqtt_port=1883
-mqtt_user=
-mqtt_password=
-mqtt_discovery_base_topic="homeassistant/sensor/servers_{{ ansible_hostname|replace("-", "_")_}}"
+readonly MQTT_BROKER="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
+readonly MQTT_PORT="1883"
+readonly MQTT_USER=""
+readonly MQTT_PASSWORD=""
+readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/servers_{{ ansible_hostname|replace("-", "_")_}}"
 
 
-# TODO: auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
-# TODO: script is run on every startup of server, run auto-discovery and if config is already there check for new or missing sensors
+# auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
+# script is run on every startup of server, run auto-discovery and if config is already there check for new or missing sensors
+# autogenerate discovery message for ansible mqtt
+# resend discovery message on each restart not only when sensors changed
 
-# TODO: autogenerate discovery message for ansible mqtt
-# TODO: resend discovery message on each restart not only when sensors changed
+# Find all /dev/sd* devices (excluding partitions like sda1, sdb2, etc.)
+# TODO: Find devices once and store in config to iterate over list instead of searching every time, move to other script?
+# TODO: check if number of devices changed to see if a new drive was added or removed. Move to other script?
+# TODO: if drive was removed/is missing throw error (create error also in HA)
+devices=$(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null)
+
+if [ -z "$devices" ]; then
+    echo "No /dev/sd* devices found." >&2
+    exit 1
+fi
+
