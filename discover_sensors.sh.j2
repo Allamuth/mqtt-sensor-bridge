@@ -1,11 +1,21 @@
 #!/bin/bash
 
-#MQTT broker details
+#######################################
+# Define needed variables.
+# Arguments:
+#   None
+#######################################
+
+# MQTT broker details
 readonly MQTT_BROKER="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
 readonly MQTT_PORT="1883"
 readonly MQTT_USER=""
 readonly MQTT_PASSWORD=""
 readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/servers_{{ ansible_hostname|replace("-", "_")_}}"
+
+# Cache details
+readonly CACHE_DIR="/var/cache/discover_sensors"
+readonly CACHE_TYPES=("drives" "sensors")
 
 
 # auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
@@ -13,14 +23,116 @@ readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/servers_{{ ansible_host
 # autogenerate discovery message for ansible mqtt
 # resend discovery message on each restart not only when sensors changed
 
-# Find all /dev/sd* devices (excluding partitions like sda1, sdb2, etc.)
-# TODO: Find devices once and store in config to iterate over list instead of searching every time, move to other script?
-# TODO: check if number of devices changed to see if a new drive was added or removed. Move to other script?
-# TODO: if drive was removed/is missing throw error (create error also in HA)
-devices=$(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null)
 
-if [ -z "$devices" ]; then
-    echo "No /dev/sd* devices found." >&2
-    exit 1
-fi
+#######################################
+# Initialize caches needed for this script using script variables.
+# Arguments:
+#   None
+# Creates :
+#   CACHED_<TYPE> variable for each cached sensor type.
+#   <TYPE>_CACHE_FILE variable for each sensor types path to cache file.
+#######################################
+init_caches() {
+    # Create dir for cache files
+    mkdir -p "$CACHE_DIR"
 
+    # Load available cache files if exist, if not create them.
+    for type in "${CACHE_TYPES[@]}"; do
+        # cache_file contains full path of cache file
+        local cache_file="$CACHE_DIR/${type}.cache"
+
+        # create cache file if it doesn't exist
+        if [[ ! -f "$cache_file" ]]; then
+            touch "$cache_file"
+        fi
+
+        # Create array variable named CACHED_<TYPE> (e.g., CACHED_DRIVES)
+        local array_var="CACHED_$(tr '[:lower:]' '[:upper:]' <<< "$type")"
+        mapfile -t "$array_var" < "$cache_file" || true
+
+        # Create <TYPE>_CACHE_FILE variable (e.g., DRIVE_CACHE_FILE)
+        local cache_path="$(tr '[:lower:]' '[:upper:]' <<< "$type")_CACHE_FILE"
+        declare "$cache_path"="$cache_file"
+    done
+}
+
+# TODO: Function for sending discovery messages
+
+#######################################
+# Handle all sensors of drives, including discovery and announcements.
+#######################################
+handle_drives() {
+
+    #######################################
+    # Discover currently installed drives.
+    # Creates:
+    #   CURRENT_DRIVES containing all drives in an array.
+    # Returns:
+    #   1 if no drives were found.
+    #######################################
+    discover_drives() {
+        mapfile -t CURRENT_DRIVES < <(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null || true)
+
+        # Check if any drives were found
+        if [[ ${#CURRENT_DRIVES[@]} -eq 0 ]]; then
+            echo "No drives found." >&2
+            return 1
+        fi
+
+        echo "Detected drives: ${CURRENT_DRIVES[*]}" >$2
+
+    }
+
+    #######################################
+    # Detect which drives are new or now missing.
+    # Outputs:
+    #   Writes new discovered drives STDERR.
+    #   writes missing drives to STDERR.
+    #######################################
+    detect_drive_changes(){
+        # Create new and missing drives variables.
+        local NEW_DRIVES=()
+        MISSING_DRIVES=()
+
+        # Iterate over all currently discovered drives
+        for dev in "${CURRENT_DRIVES[@]}"; do
+            # Search for uncached drives and write to NEW_DRIVES
+            if ! printf '%s\n' "${CACHED_DRIVES[@]}" | grep -qx "$dev"; then
+                NEW_DRIVES+=("$dev")
+            fi
+        done
+
+        for dev in "${CACHED_DRIVES[@]}"; do
+            if ! printf '%s\n' "${CURRENT_DRIVES[@]}" | grep -qx "$dev"; then
+                MISSING_DRIVES+=("$dev")
+            fi
+        done
+
+        if [[ ${#NEW_DRIVES[*]} -gt 0 ]]; then
+            echo "New drives: ${NEW_DRIVES[*]}" >&2
+        fi
+
+        if [[ ${#MISSING_DRIVES[@]} -gt 0 ]]; then
+            echo "ERROR: Missing drives: ${MISSING_DRIVES[*]}" >&2
+        fi
+
+    }
+
+    if ! discover_drives; then
+        echo "Drive discovery failed, skipping to next sensor type." >&2
+        return 1
+    fi
+    detect_drive_changes
+    printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVE_CACHE_FILE"
+    # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
+    # TODO: Publish sensors for drives.
+    
+
+}
+
+#######################################
+# Main script
+#######################################
+
+init_caches
+handle_drives
