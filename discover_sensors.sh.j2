@@ -52,7 +52,7 @@ init_caches() {
 
         # Create <TYPE>_CACHE_FILE variable (e.g., DRIVE_CACHE_FILE)
         local cache_path="$(tr '[:lower:]' '[:upper:]' <<< "$type")_CACHE_FILE"
-        declare "$cache_path"="$cache_file"
+        declare -g "$cache_path"="$cache_file"
     done
 }
 
@@ -79,7 +79,7 @@ handle_drives() {
             return 1
         fi
 
-        echo "Detected drives: ${CURRENT_DRIVES[*]}" >$2
+        echo "Detected drives: ${CURRENT_DRIVES[*]}" >&2
 
     }
 
@@ -89,7 +89,7 @@ handle_drives() {
     #   Writes new discovered drives STDERR.
     #   writes missing drives to STDERR.
     #######################################
-    detect_drive_changes(){
+    detect_drive_changes() {
         # Create new and missing drives variables.
         local NEW_DRIVES=()
         MISSING_DRIVES=()
@@ -110,12 +110,60 @@ handle_drives() {
 
         if [[ ${#NEW_DRIVES[*]} -gt 0 ]]; then
             echo "New drives: ${NEW_DRIVES[*]}" >&2
+        else
+            echo "No new drives detected!" >&2
         fi
 
         if [[ ${#MISSING_DRIVES[@]} -gt 0 ]]; then
             echo "ERROR: Missing drives: ${MISSING_DRIVES[*]}" >&2
+        else 
+            echo "No missing drives, hurrey!" >&2
         fi
+    }
 
+    #######################################
+    # Detect if drive is of type HDD, SSD or NVME.
+    # Outputs:
+    #   Writes weird behaving SSD/HDD to STDERR.
+    #######################################
+    detect_drive_type() {
+        for drive in "${CURRENT_DRIVES[@]}"; do
+            case "$drive" in
+                /dev/nvme*)
+                    drive_type="nvme"
+                    ;;
+                /dev/sd*|/dev/hd*|/dev/vd*)
+                    local rotation_rate
+                    rotation_rate=$(smartctl -i "$drive" 2>/dev/null | awk '/^Rotation Rate:/')
+                    # check if rotation rate is reported, if not error
+                    if [ -z "$rotation_rate" ]; then
+                        echo "ERROR: Drive $drive is SSD or HDD but no rotation rate reported!" >&2
+                        continue
+                    fi
+
+                    if echo "$rotation_rate" | grep -qiE "Solid State|SSD|NAND|Rotation Rate.* 1"; then
+                        drive_type="ssd"
+                    elif echo "$rotation_rate" | grep -qiE "Rotation Rate.*[0-9]+ rpm"; then
+                        drive_type="hdd"
+                    else
+                        drive_type="N/A"
+                    fi
+                    ;;
+                *)
+                    echo "ERROR: Drive detected which is not NVME, HDD, or SSD!" >&2
+                    ;;
+            esac
+        done
+    }
+
+    #######################################
+    # Detect available sensors for drives.
+    #
+    #######################################
+    detect_smart_attributes() {
+        for drive in "${CURRENT_DRIVES[@]}"; do
+            output=$(smartctl -A "$drive" 2>/dev/null)
+        done
     }
 
     if ! discover_drives; then
@@ -123,7 +171,7 @@ handle_drives() {
         return 1
     fi
     detect_drive_changes
-    printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVE_CACHE_FILE"
+    printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
     # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
     # TODO: Publish sensors for drives.
     
