@@ -87,25 +87,46 @@ handle_drives() {
     # Detect which drives are new or now missing.
     # Outputs:
     #   Writes new discovered drives STDERR.
-    #   writes missing drives to STDERR.
+    #   Writes missing drives to STDERR.
     #######################################
     detect_drive_changes() {
-        # Create new and missing drives variables.
-        local NEW_DRIVES=()
-        MISSING_DRIVES=()
+        # Helper: extract drive path (first field before |)
+        get_drive_path() {
+            echo "${1%%|*}"
+        }
 
-        # Iterate over all currently discovered drives
-        for dev in "${CURRENT_DRIVES[@]}"; do
-            # Search for uncached drives and write to NEW_DRIVES
-            if ! printf '%s\n' "${CACHED_DRIVES[@]}" | grep -qx "$dev"; then
-                NEW_DRIVES+=("$dev")
-            fi
+        # Create new, missing and changed drives variables.
+        local NEW_DRIVES=()
+        local MISSING_DRIVES=()
+        local CHANGED_DRIVES=()
+
+        # Build associative arrays: drive_path -> full_record
+        declare -A current_map cached_map
+
+        # for each drive in CURRENT_DRIVES, map path to rest of content
+        for record in "${CURRENT_DRIVES[@]}"; do
+            current_map["$(get_drive_path "$record")"]="$record"
+        done
+        # for each drive in CACHED_DRIVES (file) map path to rest of content
+        for record in "${CACHED_DRIVES[@]}"; do
+            cached_map["$(get_drive_path "$record")"]="$record"
         done
 
-        for dev in "${CACHED_DRIVES[@]}"; do
-            if ! printf '%s\n' "${CURRENT_DRIVES[@]}" | grep -qx "$dev"; then
-                MISSING_DRIVES+=("$dev")
-            fi
+        # Find new drives (in current, but not in cached)
+        for path in "${!current_map[@]}"; do
+            # Search for uncached drives and write to NEW_DRIVES
+            [[ -z "${cached_map[$path]}" ]] && NEW_DRIVES+=("$path")
+        done
+
+        # Find missing drives (in cached, not in current)
+        for path in "${!cached_map[@]}"; do
+            [[ -z "${current_map[$path]}" ]] && MISSING_DRIVES+=("$path")
+        done
+        
+        # Find changed drives (in both, but different records)
+        for path in "${!cached_map[@]}"; do
+            # Drive already exists in cached_map and records differ
+            [[ -n "${cached_map[$path]}" && "${current_map[$path]}" != "${cached_map[$path]}" ]] && CHANGED_DRIVES+=("$path")
         done
 
         if [[ ${#NEW_DRIVES[*]} -gt 0 ]]; then
@@ -119,41 +140,62 @@ handle_drives() {
         else 
             echo "No missing drives, hurrey!" >&2
         fi
+
+        if [[ ${#CHANGED_DRIVES[@]} -gt 0 ]]; then
+            echo "WARNING: Changed drives: ${CHANGED_DRIVES[*]}" >&2
+            for path in "${CHANGED_DRIVES[@]}"; do
+                echo "  Old: ${cached_map[$path]}" >&2
+                echo "  New: ${current_map[$path]}" >&2
+            done
+        else
+            echo "No drive attribute changes detected!" >&2
+        fi
     }
 
     #######################################
-    # Detect if drive is of type HDD, SSD or NVME.
+    # Detect if drive is of type HDD, SSD or NVME and write to cache.
     # Outputs:
-    #   Writes weird behaving SSD/HDD to STDERR.
+    #   Writes error for each SSD/HDD to STDERR if attributes are not reported.
     #######################################
-    detect_drive_type() {
+    detect_drive_types() {
         for drive in "${CURRENT_DRIVES[@]}"; do
+            local info_output
             case "$drive" in
                 /dev/nvme*)
                     drive_type="nvme"
                     ;;
                 /dev/sd*|/dev/hd*|/dev/vd*)
-                    local rotation_rate
-                    rotation_rate=$(smartctl -i "$drive" 2>/dev/null | awk '/^Rotation Rate:/')
-                    # check if rotation rate is reported, if not error
-                    if [ -z "$rotation_rate" ]; then
-                        echo "ERROR: Drive $drive is SSD or HDD but no rotation rate reported!" >&2
+                    info_output=$(smartctl -i "$drive" 2>/dev/null)
+
+                    # check if smartctl -i reports if not error
+                    if [[ -z info_output ]]; then
+                        echo "ERROR: Could not get info for $drive" >&2
                         continue
                     fi
 
-                    if echo "$rotation_rate" | grep -qiE "Solid State|SSD|NAND|Rotation Rate.* 1"; then
+                    local model serial capacity drive_type
+                    model=$(echo "$info_output" | awk -F: '/^[[:space:]]*Device Model:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}')
+                    serial=$(echo "$info_output" | awk -F: '/^[[:space:]]*Serial Number:/ {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}')
+                    capacity=$(echo "$info_output" | awk -F'[][]' '/User Capacity:/ {print $2}')
+                    
+
+                    if echo "$info_output" | grep -qiE "Solid State|SSD|NAND|Rotation Rate.* 1"; then
                         drive_type="ssd"
-                    elif echo "$rotation_rate" | grep -qiE "Rotation Rate.*[0-9]+ rpm"; then
+                    elif echo "$info_output" | grep -qiE "Rotation Rate.*[0-9]+ rpm"; then
                         drive_type="hdd"
                     else
-                        drive_type="N/A"
+                        drive_type="unknown"
                     fi
                     ;;
                 *)
                     echo "ERROR: Drive detected which is not NVME, HDD, or SSD!" >&2
                     ;;
             esac
+            # Build pipe-delimited record and store in temporary array
+            new_drives+=("${drive}|${model}|${serial}|${capacity}|${drive_type}")
         done
+        # Replace global CURRENT_DRIVES with enriched data
+        CURRENT_DRIVES=("${new_drives[@]}")
     }
 
     #######################################
@@ -170,8 +212,10 @@ handle_drives() {
         echo "Drive discovery failed, skipping to next sensor type." >&2
         return 1
     fi
+    detect_drive_types
     detect_drive_changes
     printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
+    echo ${CURRENT_DRIVES[@]}
     # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
     # TODO: Publish sensors for drives.
     
