@@ -17,6 +17,54 @@ readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/servers_{{ ansible_host
 readonly CACHE_DIR="/var/cache/discover_sensors"
 readonly CACHE_TYPES=("drives" "sensors")
 
+# SMART attributes to check for
+readonly -A COMMON_ATTRS=(
+    [1]="Raw_Read_Error_Rate"
+    [4]="Start_Stop_Count"
+    [5]="Reallocated_Sector_Ct"
+    [9]="Power_On_Hours"
+    [12]="Power_Cycle_Count"
+    [194]="Temperature_Celsius"
+    [197]="Current_Pending_Sector"
+    [198]="Offline_Uncorrectable"
+)
+
+readonly -A SSD_ATTRS=(
+    [177]="Wear_Leveling_Count"
+    [179]="Used_Rsvd_Blk_Cnt_Tot"
+    [181]="Program_Fail_Cnt_Total"
+    [182]="Erase_Fail_Count_Total"
+    [183]="Runtime_Bad_Block"
+    [184]="End-to-End_Error"
+    [187]="Reported_Uncorrect"
+    [232]="Available_Reservd_Space"
+    [233]="Media_Wearout_Indicator"
+    [234]="Total_LBAs_Written"
+    [235]="Total_LBAs_Read"
+    [241]="Total_LBAs_Written_Exp"
+    [242]="Total_LBAs_Read_Exp"
+)
+
+readonly -A HDD_ATTRS=(
+    [2]="Throughput_Performance"
+    [3]="Spin_Up_Time"
+    [6]="Read_Channel_Margin"
+    [7]="Seek_Error_Rate"
+    [8]="Seek_Time_Performance"
+    [10]="Spin_Retry_Count"
+    [11]="Calibration_Retry_Count"
+    [13]="Soft_Read_Error_Rate"
+    [190]="Airflow_Temperature_Cel"
+    [191]="GW_Power_Cycle_Count"
+    [192]="Power-off_Retract_Count"
+    [193]="Load_Cycle_Count"
+    [195]="Hardware_ECC_Recovered"
+    [199]="UDMA_CRC_Error_Count"
+    [200]="Multi_Zone_Error_Rate"
+    [240]="Head_Flying_Hours"
+    [241]="Total_LBAs_Written"
+    [242]="Total_LBAs_Read"
+)
 
 # auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
 # script is run on every startup of server, run auto-discovery and if config is already there check for new or missing sensors
@@ -47,13 +95,67 @@ init_caches() {
         fi
 
         # Create array variable named CACHED_<TYPE> (e.g., CACHED_DRIVES)
-        local array_var="CACHED_$(tr '[:lower:]' '[:upper:]' <<< "$type")"
+        local array_var
+        array_var="CACHED_$(tr '[:lower:]' '[:upper:]' <<< "$type")"
         mapfile -t "$array_var" < "$cache_file" || true
 
         # Create <TYPE>_CACHE_FILE variable (e.g., DRIVE_CACHE_FILE)
-        local cache_path="$(tr '[:lower:]' '[:upper:]' <<< "$type")_CACHE_FILE"
+        local cache_path
+        cache_path="$(tr '[:lower:]' '[:upper:]' <<< "$type")_CACHE_FILE"
         declare -g "$cache_path"="$cache_file"
     done
+}
+
+#######################################
+# Check if required commands are available in the environment.
+# Arguments:
+#   None
+# Returns:
+#   1 if mosquitto_pub or smartctl is not found.
+# Outputs:
+#   Writes error messages to STDERR if commands are missing.
+#######################################
+check_environment() {
+    # Check if mosquitto_pub is available
+    if ! command -v mosquitto_pub &> /dev/null; then
+        echo "Error: mosquitto_pub not found. Please install mosquitto-clients." >&2
+        exit 1
+    fi
+
+    # Check if smartctl is available
+    if ! command -v smartctl &> /dev/null; then
+        echo "Error: smartctl not found. Please install smartmontools." >&2
+        exit 1
+    fi
+}
+
+
+#######################################
+# Publish a sensor value to MQTT broker.
+# Arguments:
+#   $1 - topic_suffix: The suffix to append to the base MQTT topic.
+#   $2 - value: The value to publish.
+#   $3 - retained: Boolean flag (true/1/false/0) for retained message.
+# Outputs:
+#   Publishes the value to the MQTT broker.
+#######################################
+publish_mqtt() {
+    local topic_suffix=$1
+    local value=$2
+    local retained=$3
+    local full_topic="${MQTT_DISCOVERY_BASE_TOPIC}${topic_suffix}"
+    
+    # set retained flag if retained_flag is true
+    local retained_flag=""
+    if [[ "$retained" == "true" || "$retained" == "1" ]]; then
+        retained_flag="-r"
+    fi
+
+    if [[ -n "$mqtt_user" ]]; then
+        mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" -t "$full_topic" -m "$value" -q 1 $retained_flag
+    else
+        mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" -t "$full_topic" -m "$value" -q 1 $retained_flag
+    fi
 }
 
 # TODO: Function for sending discovery messages
@@ -96,9 +198,9 @@ handle_drives() {
         }
 
         # Create new, missing and changed drives variables.
-        local NEW_DRIVES=()
-        local MISSING_DRIVES=()
-        local CHANGED_DRIVES=()
+        local new_drives=()
+        local missing_drives=()
+        local changed_drives=()
 
         # Build associative arrays: drive_path -> full_record
         declare -A current_map cached_map
@@ -111,45 +213,50 @@ handle_drives() {
         for record in "${CACHED_DRIVES[@]}"; do
             cached_map["$(get_drive_path "$record")"]="$record"
         done
-
+ 
         # Find new drives (in current, but not in cached)
         for path in "${!current_map[@]}"; do
-            # Search for uncached drives and write to NEW_DRIVES
-            [[ -z "${cached_map[$path]}" ]] && NEW_DRIVES+=("$path")
+            # Search for uncached drives and write to new_drives
+            [[ -z "${cached_map[$path]}" ]] && new_drives+=("$path")
         done
 
         # Find missing drives (in cached, not in current)
         for path in "${!cached_map[@]}"; do
-            [[ -z "${current_map[$path]}" ]] && MISSING_DRIVES+=("$path")
+            [[ -z "${current_map[$path]}" ]] && missing_drives+=("$path")
         done
         
         # Find changed drives (in both, but different records)
         for path in "${!cached_map[@]}"; do
             # Drive already exists in cached_map and records differ
-            [[ -n "${cached_map[$path]}" && "${current_map[$path]}" != "${cached_map[$path]}" ]] && CHANGED_DRIVES+=("$path")
+            [[ -n "${cached_map[$path]}" && "${current_map[$path]}" != "${cached_map[$path]}" ]] && changed_drives+=("$path")
         done
 
-        if [[ ${#NEW_DRIVES[*]} -gt 0 ]]; then
-            echo "New drives: ${NEW_DRIVES[*]}" >&2
+        if [[ ${#new_drives[*]} -gt 0 ]]; then
+            echo "New drives: ${new_drives[*]}" >&2
         else
             echo "No new drives detected!" >&2
         fi
 
-        if [[ ${#MISSING_DRIVES[@]} -gt 0 ]]; then
-            echo "ERROR: Missing drives: ${MISSING_DRIVES[*]}" >&2
+        if [[ ${#missing_drives[@]} -gt 0 ]]; then
+            echo "ERROR: Missing drives: ${missing_drives[*]}" >&2
+            declare -g MISSING_DRIVES_RECORDS=()
+            for path in "${MISSING_DRIVES_RECORDS[@]}"; do
+                MISSING_DRIVES_RECORDS+=("${cached_map[$path]}")
+            done
         else 
             echo "No missing drives, hurrey!" >&2
         fi
 
-        if [[ ${#CHANGED_DRIVES[@]} -gt 0 ]]; then
-            echo "WARNING: Changed drives: ${CHANGED_DRIVES[*]}" >&2
-            for path in "${CHANGED_DRIVES[@]}"; do
+        if [[ ${#changed_drives[@]} -gt 0 ]]; then
+            echo "WARNING: Changed drives: ${changed_drives[*]}" >&2
+            for path in "${changed_drives[@]}"; do
                 echo "  Old: ${cached_map[$path]}" >&2
                 echo "  New: ${current_map[$path]}" >&2
             done
         else
             echo "No drive attribute changes detected!" >&2
         fi
+
     }
 
     #######################################
@@ -168,7 +275,7 @@ handle_drives() {
                     info_output=$(smartctl -i "$drive" 2>/dev/null)
 
                     # check if smartctl -i reports if not error
-                    if [[ -z info_output ]]; then
+                    if [[ -z $info_output ]]; then
                         echo "ERROR: Could not get info for $drive" >&2
                         continue
                     fi
@@ -199,28 +306,92 @@ handle_drives() {
     }
 
     #######################################
-    # Detect available sensors for drives.
+    # Detect available sensors for each drive.
     #
     #######################################
     detect_smart_attributes() {
+        local updated_drives
         for drive in "${CURRENT_DRIVES[@]}"; do
-            output=$(smartctl -A "$drive" 2>/dev/null)
+            local drive_path="${drive%%|*}"
+            local drive_type="${drive##*|}"
+            local -a detected_attributes=()
+            local detected_attributes_csv=""
+            
+            local attribute_output
+            attribute_output=$(smartctl -A "$drive_path" 2>/dev/null)
+            if [[ -z $attribute_output ]]; then
+                echo "WARNING: Could not get SMART attributes for $drive_path" >&2
+                continue
+            fi
+
+            while IFS= read -r line; do
+                [[ "$line" =~ ^ID#|^#|^[[:space:]]*$ ]] && continue
+                local attr_id
+                attr_id=$(echo "$line" | awk '{print $1}')
+
+                if [[ "$attr_id" =~ ^[0-9]+$ ]]; then
+                    case "$drive_type" in
+                        "ssd"|"nvme")
+                            if [[ -n "${COMMON_ATTRS[$attr_id]}" || -n "${SSD_ATTRS[$attr_id]}" ]]; then
+                                detected_attributes+=("$attr_id")
+                            fi
+                            ;;
+                        "hdd")
+                            if [[ -n "${COMMON_ATTRS[$attr_id]}" || -n "${HDD_ATTRS[$attr_id]}" ]]; then
+                                detected_attributes+=("$attr_id")
+                            fi
+                            ;;
+                        *)
+                            echo "WARNING: Unknown drive type '$drive_type' for $drive_path" >&2
+                        ;;
+                    esac
+                fi
+            done <<< "$attribute_output"
+
+            if [[ ${#detected_attributes[@]} -gt 0 ]]; then
+                readarray -t detected_attributes < <(sort  -n -u <<<"${detected_attributes[*]}")
+
+                # remove attribute 190 if 194 is present
+                if [[ " ${detected_attributes[*]} " == *\ 194\ * ]]; then
+                      detected_attributes=("${detected_attributes[@]/\ 190}")
+                fi
+            fi
+
+            # Convert detected_attributes to comma separated list string
+            detected_attributes_csv="${detected_attributes[*]}"
+            detected_attributes_csv="${detected_attributes_csv// /,}"
+
+            # Append attributes as final pipe-delimited field
+            updated_drives+=("${drive}|${detected_attributes_csv}")
         done
+
+        # Replace global array
+        CURRENT_DRIVES=("${updated_drives[@]}")
+    }
+
+    publish_unavailable_sensors() {
+        continue
+    }
+
+    publish_sensors() {
+        continue
     }
 
     if ! discover_drives; then
-        echo "Drive discovery failed, skipping to next sensor type." >&2
+        echo "ERROR: Drive discovery failed, skipping to next sensor type." >&2
         return 1
     fi
     detect_drive_types
+    detect_smart_attributes
     detect_drive_changes
     printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
-    echo ${CURRENT_DRIVES[@]}
+    echo "${CURRENT_DRIVES[@]}"
     # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
     # TODO: Publish sensors for drives.
     
 
 }
+
 
 #######################################
 # Main script
