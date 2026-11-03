@@ -11,7 +11,7 @@ readonly MQTT_BROKER="{{ hostvars['home-assistant.lan'].ansible_hostname }}"
 readonly MQTT_PORT="1883"
 readonly MQTT_USER=""
 readonly MQTT_PASSWORD=""
-readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/servers_{{ ansible_hostname|replace("-", "_")_}}"
+readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/host_{{ ansible_hostname|replace("-", "_")_}}"
 
 # Cache details
 readonly CACHE_DIR="/var/cache/discover_sensors"
@@ -129,7 +129,6 @@ check_environment() {
     fi
 }
 
-
 #######################################
 # Publish a sensor value to MQTT broker.
 # Arguments:
@@ -158,7 +157,35 @@ publish_mqtt() {
     fi
 }
 
-# TODO: Function for sending discovery messages
+#######################################
+# Publish a json formatted message per sensor/entity under the ../available
+# topic with retained, this ensures that no cache handling is needed.
+#######################################
+publish_sensors_available() {
+    local topic_suffix=$1
+    publish_mqtt "$topic_suffix" "online" "false"
+}
+
+#######################################
+# Publish a json formatted message per sensor/entity under the ../available
+# topic with retained, this ensures that no cache handling is needed.
+#######################################
+publish_sensors_unavailable() {
+    local topic_suffix=$1
+    publish_mqtt "$topic_suffix" "offline" "true"
+}
+
+#######################################
+# Publish a json formatted message which contains the name, unique_id,
+# state_topic, value_template, unit_of_measurement, device_class, state_class
+# and the device itself. (id, name, model, serial, manufacturer, etc.).
+# Also publishes the entity/sensor as available in it's topic
+#######################################
+publish_discovery() {
+    local topic_suffix=$1
+    local message=$2
+    publish_mqtt "$topic_suffix" "$message" "retained"
+}
 
 #######################################
 # Handle all sensors of drives, including discovery and announcements.
@@ -173,7 +200,7 @@ handle_drives() {
     #   1 if no drives were found.
     #######################################
     discover_drives() {
-        mapfile -t CURRENT_DRIVES < <(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null || true)
+        mapfile -t CURRENT_DRIVES < <(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null | sed 's|/dev/||' || true)
 
         # Check if any drives were found
         if [[ ${#CURRENT_DRIVES[@]} -eq 0 ]]; then
@@ -186,7 +213,7 @@ handle_drives() {
     }
 
     #######################################
-    # Detect which drives are new or now missing.
+    # Detect which drives are new or missing.
     # Outputs:
     #   Writes new discovered drives STDERR.
     #   Writes missing drives to STDERR.
@@ -268,11 +295,11 @@ handle_drives() {
         for drive in "${CURRENT_DRIVES[@]}"; do
             local info_output
             case "$drive" in
-                /dev/nvme*)
+                nvme*)
                     drive_type="nvme"
                     ;;
-                /dev/sd*|/dev/hd*|/dev/vd*)
-                    info_output=$(smartctl -i "$drive" 2>/dev/null)
+                sd*|hd*|vd*)
+                    info_output=$(smartctl -i "/dev/$drive" 2>/dev/null)
 
                     # check if smartctl -i reports if not error
                     if [[ -z $info_output ]]; then
@@ -312,7 +339,7 @@ handle_drives() {
     detect_smart_attributes() {
         local updated_drives
         for drive in "${CURRENT_DRIVES[@]}"; do
-            local drive_path="${drive%%|*}"
+            local drive_path="/dev/${drive%%|*}"
             local drive_type="${drive##*|}"
             local -a detected_attributes=()
             local detected_attributes_csv=""
@@ -369,13 +396,7 @@ handle_drives() {
         CURRENT_DRIVES=("${updated_drives[@]}")
     }
 
-    publish_unavailable_sensors() {
-        continue
-    }
 
-    publish_sensors() {
-        continue
-    }
 
     if ! discover_drives; then
         echo "ERROR: Drive discovery failed, skipping to next sensor type." >&2
@@ -386,6 +407,7 @@ handle_drives() {
     detect_drive_changes
     printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
     echo "${CURRENT_DRIVES[@]}"
+    # TODO: Publish discovery message for available drives
     # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
     # TODO: Publish sensors for drives.
     
