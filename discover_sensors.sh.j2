@@ -66,10 +66,57 @@ readonly -A HDD_ATTRS=(
     [242]="Total_LBAs_Read"
 )
 
+readonly -A ATTRS_CLASS_MAP=(
+    [1]=""
+    [2]=""
+    [3]="duration"
+    [4]="None"
+    [5]=""
+    [6]=""
+    [7]=""
+    [8]=""
+    [9]="duration"
+    [10]=""
+    [11]=""
+    [12]=""
+    [13]=""
+    [177]=""
+    [179]=""
+    [181]=""
+    [182]=""
+    [183]=""
+    [184]=""
+    [187]=""
+    [190]="temperature"
+    [191]=""
+    [192]=""
+    [193]=""
+    [194]="temperature"
+    [195]=""
+    [197]=""
+    [198]=""
+    [199]=""
+    [200]=""  
+    [232]="data_size"
+    [233]="data_size"
+    [234]="data_size"
+    [235]="data_size"
+    [240]="duration"
+    [241]="data_size"
+    [242]="data_size"
+)
+
+readonly -A CLASS_UOM_MAP=(
+    ["temperature"]="°C"
+    ["duration"]="h"
+    ["data_size"]="LBAs"
+)
+    
+    
 # auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
 # script is run on every startup of server, run auto-discovery and if config is already there check for new or missing sensors
 # autogenerate discovery message for ansible mqtt
-# resend discovery message on each restart not only when sensors changed
+# resend discovery message on each restart not only when sensor changed
 
 
 #######################################
@@ -116,26 +163,26 @@ init_caches() {
 #   Writes error messages to STDERR if commands are missing.
 #######################################
 check_environment() {
-    local environment_error = "false"
+    local environment_error="false"
 
     # Check if mosquitto_pub is available
     if ! command -v mosquitto_pub &> /dev/null; then
         echo "Error: mosquitto_pub not found. Please install mosquitto-clients." >&2
-        environment_error = "true"
+        environment_error="true"
     fi
 
     # Check if smartctl is available
     if ! command -v smartctl &> /dev/null; then
         echo "Error: smartctl not found. Please install smartmontools." >&2
-        environment_error = "true"
+        environment_error="true"
     fi
 
     if ! command -v jq &> /dev/null; then
         echo "Error: jq not found. Please install jq." >&2
-        environment_error = "true"
+        environment_error="true"
     fi
 
-    if environment_error == "true"; then
+    if environment_error = "true"; then
         exit 1
     fi
 }
@@ -409,7 +456,52 @@ handle_drives() {
     #######################################
     publish_drive_discovery() {
         for drive in "${CURRENT_DRIVES[@]}"; do
+            IFS='|' read -r drive_path model serial_number capacity drive_type attributes <<< "$drive"
 
+            echo "Processing: $drive_path, Model: $model, Serial: $serial_number"
+            
+            for attr_id in ${attributes//,/}; do
+                attr_name="${COMMON_ATTRS[$attr_id]}"
+                [[ -z "$attr_name" ]] && attr_name="${SSD_ATTRS[$attr_id]}"
+                [[ -z "$attr_name" ]] && attr_name="${HDD_ATTRS[$attr_id]}"
+                [[ -z "$attr_name" ]] && continue
+
+                local state_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/state"
+                local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
+                local config_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/config"
+
+                # Look up device class and unit from mappings
+                local device_class="${ATTR_DEVICE_CLASSES[$attr_id]:-}"
+                local unit="${CLASS_UOM_MAP[$device_class]:-}"
+
+                message=${jq -n \
+                    --arg name "${drive_path} ${attr_name//_/}" \
+                    --arg uid "${HOSTNAME}_${drive_path}_${attr_id}" \
+                    --arg st "${state_topic}" \
+                    --arg av "${avail_topic}" \
+                    --arg dc "$device_class" \
+                    --arg uom "$unit" \
+                    --arg model "$model" \
+                    --arg serial_number "$serial_number" \
+                    '{
+                      name: $name,
+                      unique_id: $uid,
+                      state_topic: $st,
+                      value_template: "{{ value_json.value }}",
+                      unit_of_measurement: $uom,
+                      device_class: $dc,
+                      state_class: "measurement",
+                      availability: [{topic: $av}],
+                      device: {
+                        identifiers: [$uid],
+                        name: ("Drive " + "'"${drive_path}"'"),
+                        model: $model,
+                        serial: $serial
+                      }
+                    }'}
+
+                publish_discovery "$config_topic" "$message"
+            done
         done
     }
 
@@ -419,7 +511,7 @@ handle_drives() {
     #######################################
     publish_unavailable_drives() {
         for drive in "${CURRENT_DRIVES[@]}"; do
-
+            true
         done
     }
 
