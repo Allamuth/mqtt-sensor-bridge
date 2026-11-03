@@ -111,20 +111,31 @@ init_caches() {
 # Arguments:
 #   None
 # Returns:
-#   1 if mosquitto_pub or smartctl is not found.
+#   1 if mosquitto_pub,  smartctl or jq is not found.
 # Outputs:
 #   Writes error messages to STDERR if commands are missing.
 #######################################
 check_environment() {
+    local environment_error = "false"
+
     # Check if mosquitto_pub is available
     if ! command -v mosquitto_pub &> /dev/null; then
         echo "Error: mosquitto_pub not found. Please install mosquitto-clients." >&2
-        exit 1
+        environment_error = "true"
     fi
 
     # Check if smartctl is available
     if ! command -v smartctl &> /dev/null; then
         echo "Error: smartctl not found. Please install smartmontools." >&2
+        environment_error = "true"
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        echo "Error: jq not found. Please install jq." >&2
+        environment_error = "true"
+    fi
+
+    if environment_error == "true"; then
         exit 1
     fi
 }
@@ -207,9 +218,7 @@ handle_drives() {
             echo "No drives found." >&2
             return 1
         fi
-
         echo "Detected drives: ${CURRENT_DRIVES[*]}" >&2
-
     }
 
     #######################################
@@ -283,7 +292,6 @@ handle_drives() {
         else
             echo "No drive attribute changes detected!" >&2
         fi
-
     }
 
     #######################################
@@ -334,7 +342,6 @@ handle_drives() {
 
     #######################################
     # Detect available sensors for each drive.
-    #
     #######################################
     detect_smart_attributes() {
         local updated_drives
@@ -396,7 +403,25 @@ handle_drives() {
         CURRENT_DRIVES=("${updated_drives[@]}")
     }
 
+    #######################################
+    # Send the discovery message(s) for each drive's available sensors
+    # and set it as online in its "../available" topic.
+    #######################################
+    publish_drive_discovery() {
+        for drive in "${CURRENT_DRIVES[@]}"; do
 
+        done
+    }
+
+    #######################################
+    # Send the discovery message(s) for each drive's available sensors
+    # and set it as online in its "../available" topic.
+    #######################################
+    publish_unavailable_drives() {
+        for drive in "${CURRENT_DRIVES[@]}"; do
+
+        done
+    }
 
     if ! discover_drives; then
         echo "ERROR: Drive discovery failed, skipping to next sensor type." >&2
