@@ -70,7 +70,7 @@ readonly -A ATTRS_CLASS_MAP=(
     [1]=""
     [2]=""
     [3]="duration"
-    [4]="None"
+    [4]=""
     [5]=""
     [6]=""
     [7]=""
@@ -99,17 +99,17 @@ readonly -A ATTRS_CLASS_MAP=(
     [200]=""  
     [232]="data_size"
     [233]="data_size"
-    [234]="data_size"
-    [235]="data_size"
+    [234]=""
+    [235]=""
     [240]="duration"
-    [241]="data_size"
-    [242]="data_size"
+    [241]=""
+    [242]=""
 )
 
 readonly -A CLASS_UOM_MAP=(
     ["temperature"]="°C"
     ["duration"]="h"
-    ["data_size"]="LBAs"
+    ["data_size"]="B"
 )
     
     
@@ -163,26 +163,27 @@ init_caches() {
 #   Writes error messages to STDERR if commands are missing.
 #######################################
 check_environment() {
-    local environment_error="false"
+    local environment_error=false
 
-    # Check if mosquitto_pub is available
+    # Check if mosquitto_pub is installed.
     if ! command -v mosquitto_pub &> /dev/null; then
         echo "Error: mosquitto_pub not found. Please install mosquitto-clients." >&2
-        environment_error="true"
+        environment_error=true
     fi
 
-    # Check if smartctl is available
+    # Check if smartctl is insalled.
     if ! command -v smartctl &> /dev/null; then
         echo "Error: smartctl not found. Please install smartmontools." >&2
-        environment_error="true"
+        environment_error=true
     fi
 
+    # Check if jq is installed.
     if ! command -v jq &> /dev/null; then
         echo "Error: jq not found. Please install jq." >&2
-        environment_error="true"
+        environment_error=true
     fi
 
-    if environment_error = "true"; then
+    if [[ "$environment_error" = true ]]; then
         exit 1
     fi
 }
@@ -460,10 +461,18 @@ handle_drives() {
 
             echo "Processing: $drive_path, Model: $model, Serial: $serial_number"
             
-            for attr_id in ${attributes//,/}; do
+            for attr_id in ${attributes//,/ }; do
                 attr_name="${COMMON_ATTRS[$attr_id]}"
-                [[ -z "$attr_name" ]] && attr_name="${SSD_ATTRS[$attr_id]}"
-                [[ -z "$attr_name" ]] && attr_name="${HDD_ATTRS[$attr_id]}"
+                if [[ -z "$attr_name" ]]; then
+                    case "$drive_type" in
+                        "ssd"|"nvme")
+                            attr_name="${SSD_ATTRS[$attr_id]}"
+                            ;;
+                        "hdd")
+                            attr_name="${HDD_ATTRS[$attr_id]}"
+                            ;;
+                    esac
+                fi
                 [[ -z "$attr_name" ]] && continue
 
                 local state_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/state"
@@ -471,11 +480,11 @@ handle_drives() {
                 local config_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/config"
 
                 # Look up device class and unit from mappings
-                local device_class="${ATTR_DEVICE_CLASSES[$attr_id]:-}"
+                local device_class="${ATTRS_CLASS_MAP[$attr_id]:-}"
                 local unit="${CLASS_UOM_MAP[$device_class]:-}"
 
-                message=${jq -n \
-                    --arg name "${drive_path} ${attr_name//_/}" \
+                message=$(jq -n \
+                    --arg name "${drive_path} ${attr_name//_/ }" \
                     --arg uid "${HOSTNAME}_${drive_path}_${attr_id}" \
                     --arg st "${state_topic}" \
                     --arg av "${avail_topic}" \
@@ -496,10 +505,10 @@ handle_drives() {
                         identifiers: [$uid],
                         name: ("Drive " + "'"${drive_path}"'"),
                         model: $model,
-                        serial: $serial
+                        serial: $serial_number
                       }
-                    }'}
-
+                    }')
+                
                 publish_discovery "$config_topic" "$message"
             done
         done
@@ -524,7 +533,7 @@ handle_drives() {
     detect_drive_changes
     printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
     echo "${CURRENT_DRIVES[@]}"
-    # TODO: Publish discovery message for available drives
+    publish_drive_discovery
     # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
     # TODO: Publish sensors for drives.
     
