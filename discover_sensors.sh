@@ -535,7 +535,8 @@ handle_drives() {
 
                 # Look up device class and unit from mappings
                 local device_class="${ATTRS_CLASS_MAP[$attr_id]:-}"
-                local unit="${CLASS_UOM_MAP[$device_class]:-}"
+                local unit=""
+                [[ -n "$device_class" ]] && unit="${CLASS_UOM_MAP[$device_class]:-}"
 
                 message=$(jq -n \
                     --arg name "${drive_path} ${attr_name//_/ }" \
@@ -563,7 +564,7 @@ handle_drives() {
                       }
                     }')
                 
-                publish_discovery "$config_topic" "$message"
+                #publish_discovery "$config_topic" "$message"
             done
         done
     }
