@@ -24,6 +24,7 @@ This repository contains two scripts for monitoring disk health via MQTT:
 ```
 
 ### Common Options
+```
 -b, --broker HOST       MQTT broker hostname (default: localhost)
 -p, --port PORT         MQTT broker port (default: 1883)
 -u, --user USERNAME     MQTT username
@@ -31,6 +32,9 @@ This repository contains two scripts for monitoring disk health via MQTT:
 -t, --topic TOPIC       MQTT discovery base topic
 -c, --cache-dir DIR     Cache directory (default: /var/cache/discover_sensors)
 -h, --help              Show help
+```
+
+
 Run with `-h` for full usage information.
 
 ## Integration
