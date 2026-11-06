@@ -450,21 +450,21 @@ handle_drives() {
         local new_drives=() missing_drives=() changed_drives=()
 
         # Build associative arrays: drive_path -> full_record
-        declare -A current_map cached_map
+        declare -A current_drive_map cached_drive_map
 
         # for each drive in CURRENT_DRIVES, map path to rest of content
-        for record in "${CURRENT_DRIVES[@]}"; do
-            current_map["$(get_drive_path "$record")"]="$record"
+        for drive in "${CURRENT_DRIVES[@]}"; do
+            current_drive_map["$(get_drive_path "$drive")"]="$drive"
         done
         # for each drive in CACHED_DRIVES (file) map path to rest of content
-        for record in "${CACHED_DRIVES[@]}"; do
-            cached_map["$(get_drive_path "$record")"]="$record"
+        for drive in "${CACHED_DRIVES[@]}"; do
+            cached_drive_map["$(get_drive_path "$drive")"]="$drive"
         done
  
         # Find new drives (in current, but not in cached)
-        for path in "${!current_map[@]}"; do
+        for drive in "${!current_drive_map[@]}"; do
             # Search for uncached drives and write to new_drives
-            [[ -z "${cached_map[$path]}" ]] && new_drives+=("$path")
+            [[ -z "${cached_drive_map[$drive]}" ]] && new_drives+=("$drive")
         done
 
         if [[ ${#new_drives[*]} -gt 0 ]]; then
@@ -474,36 +474,36 @@ handle_drives() {
         fi
 
         # Find missing drives (in cached, not in current)
-        for path in "${!cached_map[@]}"; do
-            [[ -z "${current_map[$path]}" ]] && missing_drives+=("$path")
+        for path in "${!cached_drive_map[@]}"; do
+            [[ -z "${current_drive_map[$path]}" ]] && missing_drives+=("$path")
         done
 
         if [[ ${#missing_drives[@]} -gt 0 ]]; then
             echo "ERROR: Missing drives: ${missing_drives[*]}" >&2
             declare -g MISSING_DRIVES_RECORDS=()
             for path in "${missing_drives[@]}"; do
-                MISSING_DRIVES_RECORDS+=("${cached_map[$path]}")
+                MISSING_DRIVES_RECORDS+=("${cached_drive_map[$path]}")
             done
         else 
             echo "No missing drives, hurrey!" >&2
         fi
         
         # Find changed drives (in both, but different records)
-        for path in "${!cached_map[@]}"; do
-            # Drive already exists in cached_map and records differ
-            [[ -n "${cached_map[$path]}" && "${current_map[$path]}" != "${cached_map[$path]}" ]] && changed_drives+=("$path")
+        for path in "${!cached_drive_map[@]}"; do
+            # Drive already exists in cached_drive_map and records differ
+            [[ -n "${cached_drive_map[$path]}" && "${current_drive_map[$path]}" != "${cached_drive_map[$path]}" ]] && changed_drives+=("$path")
         done
 
         # Detect missing attributes for existing drives
         declare -g -A MISSING_ATTRS_BY_DRIVE=()  # Global: drive_path -> "attr_id1 attr_id2..."
-        for path in "${!current_map[@]}"; do
-            if [[ -n "${cached_map[$path]}" ]]; then
-                local current_attrs="${current_map[$path]}"
-                local cached_attrs="${cached_map[$path]}"
+        for path in "${!current_drive_map[@]}"; do
+            if [[ -n "${cached_drive_map[$path]}" ]]; then
+                local current_attrs="${current_drive_map[$path]}"
+                local cached_attrs="${cached_drive_map[$path]}"
 
-                echo "cached map: ${cached_map[$path]}"
-                echo "current attrs: ${current_map[$path]}"
-                echo "cached_attrs: ${cached_map[$path]}"
+                echo "cached map: ${cached_drive_map[$path]}"
+                echo "current attrs: ${current_drive_map[$path]}"
+                echo "cached_attrs: ${cached_drive_map[$path]}"
 
 
                 # Convert CSV to arrays
