@@ -22,7 +22,8 @@ readonly MQTT_BROKER="localhost"
 readonly MQTT_PORT="1883"
 readonly MQTT_USER=""
 readonly MQTT_PASSWORD=""
-readonly MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/host_$(hostname | tr - _)"
+MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/host_$(hostname | tr - _)"
+readonly MQTT_DISCOVERY_BASE_TOPIC
 # default cache directory
 readonly CACHE_DIR="/var/cache/discover_sensors"
 # default hostname
@@ -263,7 +264,7 @@ publish_mqtt() {
         retained_flag="-r"
     fi
 
-    if [[ -n "$mqtt_user" ]]; then
+    if [[ -n "$MQTT_USER" ]]; then
         mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASSWORD" -t "$full_topic" -m "$value" -q 1 $retained_flag
     else
         mosquitto_pub -h "$MQTT_BROKER" -p "$MQTT_PORT" -t "$full_topic" -m "$value" -q 1 $retained_flag
@@ -274,7 +275,7 @@ publish_mqtt() {
 # Publish a json formatted message per sensor/entity under the ../available
 # topic with retained, this ensures that no cache handling is needed.
 #######################################
-publish_sensors_available() {
+publish_sensor_available() {
     local topic_suffix=$1
     publish_mqtt "$topic_suffix" "online" "false"
 }
@@ -283,7 +284,7 @@ publish_sensors_available() {
 # Publish a json formatted message per sensor/entity under the ../available
 # topic with retained, this ensures that no cache handling is needed.
 #######################################
-publish_sensors_unavailable() {
+publish_sensor_unavailable() {
     local topic_suffix=$1
     publish_mqtt "$topic_suffix" "offline" "true"
 }
@@ -324,84 +325,12 @@ handle_drives() {
     }
 
     #######################################
-    # Detect which drives are new or missing.
-    # Outputs:
-    #   Writes new discovered drives STDERR.
-    #   Writes missing drives to STDERR.
-    #######################################
-    detect_drive_changes() {
-        # Helper: extract drive path (first field before |)
-        get_drive_path() {
-            echo "${1%%|*}"
-        }
-
-        # Create new, missing and changed drives variables.
-        local new_drives=()
-        local missing_drives=()
-        local changed_drives=()
-
-        # Build associative arrays: drive_path -> full_record
-        declare -A current_map cached_map
-
-        # for each drive in CURRENT_DRIVES, map path to rest of content
-        for record in "${CURRENT_DRIVES[@]}"; do
-            current_map["$(get_drive_path "$record")"]="$record"
-        done
-        # for each drive in CACHED_DRIVES (file) map path to rest of content
-        for record in "${CACHED_DRIVES[@]}"; do
-            cached_map["$(get_drive_path "$record")"]="$record"
-        done
- 
-        # Find new drives (in current, but not in cached)
-        for path in "${!current_map[@]}"; do
-            # Search for uncached drives and write to new_drives
-            [[ -z "${cached_map[$path]}" ]] && new_drives+=("$path")
-        done
-
-        # Find missing drives (in cached, not in current)
-        for path in "${!cached_map[@]}"; do
-            [[ -z "${current_map[$path]}" ]] && missing_drives+=("$path")
-        done
-        
-        # Find changed drives (in both, but different records)
-        for path in "${!cached_map[@]}"; do
-            # Drive already exists in cached_map and records differ
-            [[ -n "${cached_map[$path]}" && "${current_map[$path]}" != "${cached_map[$path]}" ]] && changed_drives+=("$path")
-        done
-
-        if [[ ${#new_drives[*]} -gt 0 ]]; then
-            echo "New drives: ${new_drives[*]}" >&2
-        else
-            echo "No new drives detected!" >&2
-        fi
-
-        if [[ ${#missing_drives[@]} -gt 0 ]]; then
-            echo "ERROR: Missing drives: ${missing_drives[*]}" >&2
-            declare -g MISSING_DRIVES_RECORDS=()
-            for path in "${MISSING_DRIVES_RECORDS[@]}"; do
-                MISSING_DRIVES_RECORDS+=("${cached_map[$path]}")
-            done
-        else 
-            echo "No missing drives, hurrey!" >&2
-        fi
-
-        if [[ ${#changed_drives[@]} -gt 0 ]]; then
-            echo "WARNING: Changed drives: ${changed_drives[*]}" >&2
-            for path in "${changed_drives[@]}"; do
-                echo "  Old: ${cached_map[$path]}" >&2
-                echo "  New: ${current_map[$path]}" >&2
-            done
-        else
-            echo "No drive attribute changes detected!" >&2
-        fi
-    }
-
-    #######################################
     # Detect if drive is of type HDD, SSD or NVME and write to cache.
     # Outputs:
     #   Writes error for each SSD/HDD to STDERR if attributes are not reported.
     #######################################
     detect_drive_types() {
+        local new_drives=()
         for drive in "${CURRENT_DRIVES[@]}"; do
             local info_output
             case "$drive" in
@@ -489,7 +418,7 @@ handle_drives() {
 
                 # remove attribute 190 if 194 is present
                 if [[ " ${detected_attributes[*]} " == *\ 194\ * ]]; then
-                      detected_attributes=("${detected_attributes[@]/\ 190}")
+                      detected_attributes=("${detected_attributes[@]/\ ,190/}")
                 fi
             fi
 
@@ -503,6 +432,106 @@ handle_drives() {
 
         # Replace global array
         CURRENT_DRIVES=("${updated_drives[@]}")
+    }
+
+    #######################################
+    # Detect which drives are new or missing.
+    # Outputs:
+    #   Writes new discovered drives STDERR.
+    #   Writes missing drives to STDERR.
+    #######################################
+    detect_drive_changes() {
+        # Helper: extract drive path (first field before |)
+        get_drive_path() {
+            echo "${1%%|*}"
+        }
+
+        # Create new, missing and changed drives variables.
+        local new_drives=() missing_drives=() changed_drives=()
+
+        # Build associative arrays: drive_path -> full_record
+        declare -A current_map cached_map
+
+        # for each drive in CURRENT_DRIVES, map path to rest of content
+        for record in "${CURRENT_DRIVES[@]}"; do
+            current_map["$(get_drive_path "$record")"]="$record"
+        done
+        # for each drive in CACHED_DRIVES (file) map path to rest of content
+        for record in "${CACHED_DRIVES[@]}"; do
+            cached_map["$(get_drive_path "$record")"]="$record"
+        done
+ 
+        # Find new drives (in current, but not in cached)
+        for path in "${!current_map[@]}"; do
+            # Search for uncached drives and write to new_drives
+            [[ -z "${cached_map[$path]}" ]] && new_drives+=("$path")
+        done
+
+        if [[ ${#new_drives[*]} -gt 0 ]]; then
+            echo "New drives: ${new_drives[*]}" >&2
+        else
+            echo "No new drives detected!" >&2
+        fi
+
+        # Find missing drives (in cached, not in current)
+        for path in "${!cached_map[@]}"; do
+            [[ -z "${current_map[$path]}" ]] && missing_drives+=("$path")
+        done
+
+        if [[ ${#missing_drives[@]} -gt 0 ]]; then
+            echo "ERROR: Missing drives: ${missing_drives[*]}" >&2
+            declare -g MISSING_DRIVES_RECORDS=()
+            for path in "${missing_drives[@]}"; do
+                MISSING_DRIVES_RECORDS+=("${cached_map[$path]}")
+            done
+        else 
+            echo "No missing drives, hurrey!" >&2
+        fi
+        
+        # Find changed drives (in both, but different records)
+        for path in "${!cached_map[@]}"; do
+            # Drive already exists in cached_map and records differ
+            [[ -n "${cached_map[$path]}" && "${current_map[$path]}" != "${cached_map[$path]}" ]] && changed_drives+=("$path")
+        done
+
+        # Detect missing attributes for existing drives
+        declare -g -A MISSING_ATTRS_BY_DRIVE=()  # Global: drive_path -> "attr_id1 attr_id2..."
+        for path in "${!current_map[@]}"; do
+            if [[ -n "${cached_map[$path]}" ]]; then
+                local current_attrs="${current_map[$path]}"
+                local cached_attrs="${cached_map[$path]}"
+
+                echo "cached map: ${cached_map[$path]}"
+                echo "current attrs: ${current_map[$path]}"
+                echo "cached_attrs: ${cached_map[$path]}"
+
+
+                # Convert CSV to arrays
+                IFS='|' read -r drive_path _ _ _ _ current_attr_list <<< "$current_attrs"
+                IFS='|' read -r drive_path _ _ _ _ cached_attr_list <<< "$cached_attrs"
+
+                # Find attributes in cached but not current
+                local missing_attrs=()
+                for cached_attr in "${cached_attr_list[@]}"; do
+                    local found=false
+                    echo "cached attr: $cached_attr"
+                    for current_attr in "${current_attr_list[@]}"; do
+                        [[ "$cached_attr" == "$current_attr" ]] && found=true && break
+                    done
+                    [[ "$found" == false ]] && missing_attrs+=("$cached_attr")
+                done
+
+                # Store missing attributes for this drive
+                if [[ ${#missing_attrs[@]} -gt 0 ]]; then
+                    MISSING_ATTRS_BY_DRIVE["$path"]="${missing_attrs[*]}"
+                    echo "WARNING: Missing attributes for $path: ${missing_attrs[*]}" >&2
+                fi
+            fi
+        done
+
+        if [[ ${#changed_drives[@]} -eq 0 ]]; then
+            echo "No drive attribute changes detected!" >&2
+        fi
     }
 
     #######################################
@@ -570,14 +599,31 @@ handle_drives() {
     }
 
     #######################################
-    # Send the discovery message(s) for each drive's available sensors
-    # and set it as online in its "../available" topic.
+    # Publish sensors which are not available anymore by setting their
+    # availability topic as offline. This can lead to all sensors of a drive
+    # being set to offline.
     #######################################
-    publish_unavailable_drives() {
-        for drive in "${CURRENT_DRIVES[@]}"; do
-            true
+    publish_unavailable_sensors() {
+        for drive in "${MISSING_DRIVES_RECORDS[@]}"; do
+            IFS='|' read -r drive_path _ _ _ _ attributes <<< "$drive"
+            
+            for attr_id in ${attributes//,/ }; do
+                local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
+                #publish_sensor_unavailable "$avail_topic"
+                echo "$avail_topic not available"
+            done
+        done
+
+        # Handle missing attributes on existing drives
+        for drive_path in "${!MISSING_ATTRS_BY_DRIVE[@]}"; do
+            for attr_id in ${MISSING_ATTRS_BY_DRIVE[$drive_path]}; do
+                local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
+                #publish_sensor_unavailable "$avail_topic"
+                echo "$avail_topic not available"
+            done
         done
     }
+
 
     if ! discover_drives; then
         echo "ERROR: Drive discovery failed, skipping to next sensor type." >&2
@@ -586,12 +632,10 @@ handle_drives() {
     detect_drive_types
     detect_smart_attributes
     detect_drive_changes
-    printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
     echo "${CURRENT_DRIVES[@]}"
     publish_drive_discovery
-    # TODO: Publish missing drives as unavailable to MQTT for Home Assistant.
-    # TODO: Publish sensors for drives.
-    
+    publish_unavailable_sensors
+    printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"    
 
 }
 
@@ -600,5 +644,6 @@ handle_drives() {
 # Main script
 #######################################
 
+check_environment
 init_caches
 handle_drives
