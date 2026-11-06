@@ -17,7 +17,11 @@
 #######################################
 
 # Default configuration
+# default hostname
+HOSTNAME=$(hostname)
+readonly HOSTNAME
 # MQTT broker defaults
+MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/host_${HOSTNAME}"
 readonly MQTT_BROKER="localhost"
 readonly MQTT_PORT="1883"
 readonly MQTT_USER=""
@@ -26,8 +30,8 @@ MQTT_DISCOVERY_BASE_TOPIC="homeassistant/sensor/host_$(hostname | tr - _)"
 readonly MQTT_DISCOVERY_BASE_TOPIC
 # default cache directory
 readonly CACHE_DIR="/var/cache/discover_sensors"
-# default hostname
-HOSTNAME=$(hostname)
+
+
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -314,7 +318,7 @@ handle_drives() {
     #   1 if no drives were found.
     #######################################
     discover_drives() {
-        mapfile -t CURRENT_DRIVES < <(ls /dev/sd[a-z] /dev/nvme[0-9]n[0-9] /dev/hd[a-z] /dev/vd[a-z] 2>/dev/null | sed 's|/dev/||' || true)
+        mapfile -t CURRENT_DRIVES < <(find /dev -maxdepth 1 \( -name 'sd[a-z]' -o -name 'nvme[0-9]n[0-9]' -o -name 'hd[a-z]' -o -name 'vd[a-z]' \) 2>/dev/null | sed 's|/dev/||' | sort || true)
 
         # Check if any drives were found
         if [[ ${#CURRENT_DRIVES[@]} -eq 0 ]]; then
@@ -413,13 +417,25 @@ handle_drives() {
                 fi
             done <<< "$attribute_output"
 
+
             if [[ ${#detected_attributes[@]} -gt 0 ]]; then
-                readarray -t detected_attributes < <(sort  -n -u <<<"${detected_attributes[*]}")
+                readarray -t detected_attributes < <(printf '%s\n' "${detected_attributes[@]}" | sort -n -u)
+
+                local has_194=false
+                for attr in "${detected_attributes[@]}"; do
+                    [[ "$attr" == "194" ]] && has_194=true && break
+                done
 
                 # remove attribute 190 if 194 is present
-                if [[ " ${detected_attributes[*]} " == *\ 194\ * ]]; then
-                      detected_attributes=("${detected_attributes[@]/\ ,190/}")
+                if [[ "$has_194" == true ]]; then
+                    local temp_attrs=()
+                    for attr in "${detected_attributes[@]}"; do
+                        [[ "$attr" != "190" ]] && temp_attrs+=("$attr")
+                    done
+                    detected_attributes=("${temp_attrs[@]}")
+                    unset temp_attrs
                 fi
+
             fi
 
             # Convert detected_attributes to comma separated list string
@@ -568,6 +584,7 @@ handle_drives() {
                     --arg uom "$unit" \
                     --arg model "$model" \
                     --arg serial_number "$serial_number" \
+                    --arg drive_path "$drive_path" \
                     '{
                       name: $name,
                       unique_id: $uid,
@@ -579,13 +596,12 @@ handle_drives() {
                       availability: [{topic: $av}],
                       device: {
                         identifiers: [$uid],
-                        name: ("Drive " + "'"${drive_path}"'"),
+                        name: ("Drive " + $drive_path),
                         model: $model,
                         serial: $serial_number
                       }
                     }')
-                
-                #publish_discovery "$config_topic" "$message"
+                publish_discovery "$config_topic" "$message"
             done
         done
     }
@@ -601,7 +617,7 @@ handle_drives() {
             
             for attr_id in ${attributes//,/ }; do
                 local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
-                #publish_sensor_unavailable "$avail_topic"
+                publish_sensor_unavailable "$avail_topic"
                 echo "$avail_topic not available"
             done
         done
@@ -610,7 +626,7 @@ handle_drives() {
         for drive_path in "${!MISSING_ATTRS_BY_DRIVE[@]}"; do
             for attr_id in ${MISSING_ATTRS_BY_DRIVE[$drive_path]}; do
                 local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
-                #publish_sensor_unavailable "$avail_topic"
+                publish_sensor_unavailable "$avail_topic"
                 echo "$avail_topic not available"
             done
         done
