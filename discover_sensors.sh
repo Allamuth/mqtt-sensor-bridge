@@ -605,7 +605,7 @@ handle_drives() {
                       state_class: "measurement",
                       availability: [{topic: $av}],
                       device: {
-                        identifiers: [$uid],
+                        identifiers: ["${serial_number}"],
                         name: ("Drive " + $drive_path),
                         model: $model,
                         serial: $serial_number
