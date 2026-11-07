@@ -171,12 +171,6 @@ readonly -A CLASS_UOM_MAP=(
 
 readonly CACHE_TYPES=("drives" "sensors")
 
-# auto-discover sensors, restricted to drives, CPU, GPU, others? and store to config
-# script is run on every startup of server, run auto-discovery and if config is already there check for new or missing sensors
-# autogenerate discovery message for ansible mqtt
-# resend discovery message on each restart not only when sensor changed
-
-
 #######################################
 # Initialize caches needed for this script using script variables.
 # Globals:
@@ -462,8 +456,8 @@ handle_drives() {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
             print $2
           }')
-          capacity=$(echo "${smartctl_output}" | awk -F'
-            [][]' '/User Capacity:/ {print $2}')
+          capacity=$(echo "${smartctl_output}" | awk -F'[][]' \
+            '/User Capacity:/ {print $2}')
 
           if echo "${smartctl_output}" | grep -qiE \
             "Solid State|SSD|NAND|Rotation Rate.* 1"; then
@@ -503,7 +497,7 @@ handle_drives() {
   #   CURRENT_DRIVES - Appends detected SMART attribute IDs to each drive entry.
   #######################################
   detect_smart_attributes() {
-    local updated_drives
+    local updated_drives=()
     for drive in "${CURRENT_DRIVES[@]}"; do
       local drive_path="/dev/${drive%%|*}"
       local drive_type="${drive##*|}"
@@ -524,14 +518,14 @@ handle_drives() {
         if [[ "$attr_id" =~ ^[0-9]+$ ]]; then
           case "$drive_type" in
             "ssd"|"nvme")
-              if [[ -v "${COMMON_ATTRS[$attr_id]}" \
-                || -v "${SSD_ATTRS[$attr_id]}" ]]; then
+              if [[ -v COMMON_ATTRS[$attr_id] \
+                || -v SSD_ATTRS[$attr_id] ]]; then
                 detected_attributes+=("$attr_id")
               fi
               ;;
             "hdd")
-              if [[ -v "${COMMON_ATTRS[$attr_id]}" \
-                || -v "${HDD_ATTRS[$attr_id]}" ]]; then
+              if [[ -v COMMON_ATTRS[$attr_id] \
+                || -v HDD_ATTRS[$attr_id] ]]; then
                 detected_attributes+=("$attr_id")
               fi
               ;;
@@ -714,7 +708,7 @@ handle_drives() {
       echo "Processing: ${drive_path}, Model: ${model}, Serial: ${serial_number}"
 
       for attr_id in ${attributes//,/ }; do
-        attr_name="${COMMON_ATTRS[$attr_id]}"
+        local attr_name="${COMMON_ATTRS[$attr_id]:-}"
         if [[ -z "$attr_name" ]]; then
           case "$drive_type" in
             "ssd"|"nvme")
@@ -788,8 +782,7 @@ handle_drives() {
       IFS='|' read -r drive_path _ _ _ _ attributes <<< "$drive"
 
       for attr_id in ${attributes//,/ }; do
-        local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/\
-          ${drive_path}_${attr_id}/available"
+        local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
         publish_sensor_unavailable "$avail_topic"
         echo "${avail_topic} not available"
       done
@@ -798,8 +791,7 @@ handle_drives() {
     # Handle missing attributes on existing drives
     for drive_path in "${!MISSING_ATTRS_BY_DRIVE[@]}"; do
       for attr_id in ${MISSING_ATTRS_BY_DRIVE[$drive_path]}; do
-        local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/\
-          ${drive_path}_${attr_id}/available"
+        local avail_topic="${MQTT_DISCOVERY_BASE_TOPIC}/${drive_path}_${attr_id}/available"
         publish_sensor_unavailable "$avail_topic"
         echo "${avail_topic} not available"
       done
@@ -814,7 +806,6 @@ handle_drives() {
   detect_drive_types
   detect_smart_attributes
   detect_drive_changes
-  echo "${CURRENT_DRIVES[@]}"
   publish_drive_discovery
   publish_unavailable_sensors
   printf '%s\n' "${CURRENT_DRIVES[@]}" > "$DRIVES_CACHE_FILE"
