@@ -248,6 +248,16 @@ check_environment() {
 }
 
 #######################################
+# Check if a MQTT Broker is running and reachable.
+#######################################
+check_MQTT_broker() {
+    if ! nc -z "$MQTT_BROKER" "$MQTT_PORT" 2>/dev/null; then
+        echo "Error: MQTT broker not available at $MQTT_BROKER:$MQTT_PORT" >&2
+        exit 1
+    fi
+}
+
+#######################################
 # Publish a sensor value to MQTT broker.
 # Arguments:
 #   $1 - topic_suffix: The suffix to append to the base MQTT topic.
@@ -653,5 +663,6 @@ handle_drives() {
 #######################################
 
 check_environment
+check_MQTT_broker
 init_caches
 handle_drives
